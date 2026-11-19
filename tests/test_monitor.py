@@ -11,6 +11,7 @@ from typing import Sequence
 
 import click
 import pytest
+from aiohttp import ClientSession
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -472,3 +473,109 @@ async def test_snapshot_retention(event_loop):
         assert listed[-1].name == "n20"
         with pytest.raises(KeyError):
             monitor.get_snapshot(0)
+
+
+@pytest.mark.asyncio
+async def test_snapshot_web_api(event_loop):
+    async def sleeper():
+        await asyncio.Event().wait()
+
+    with Monitor(
+        event_loop,
+        console_enabled=False,
+        hook_task_factory=True,
+        termui_port=28101,
+        webui_port=28102,
+        console_port=28103,
+    ) as monitor:
+        assert monitor.port == 28101
+        task = asyncio.create_task(sleeper(), name="web-sleeper")
+        task_id = str(id(task))
+        await asyncio.sleep(0.05)
+        base = "http://127.0.0.1:28102"
+        async with ClientSession() as client:
+            async with client.get(base + "/") as resp:
+                assert resp.status == 200
+                page = await resp.text()
+                assert "Dashboard" in page
+                assert "Snapshots" in page
+            async with client.post(base + "/api/live-tasks") as resp:
+                assert resp.status == 200
+                live = await resp.json()
+                assert "tasks" in live
+
+            async with client.post(
+                base + "/api/snapshot", data={"name": "web"}
+            ) as resp:
+                assert resp.status == 200
+                created = await resp.json()
+                assert created["id"] == 0
+            async with client.get(base + "/api/snapshot") as resp:
+                assert resp.status == 200
+                listed = await resp.json()
+                assert listed["snapshots"][0]["id"] == 0
+                assert listed["snapshots"][0]["name"] == "web"
+                assert listed["snapshots"][0]["running_count"] >= 1
+            async with client.get(base + "/api/snapshot/list") as resp:
+                assert resp.status == 200
+                assert (await resp.json())["snapshots"][0]["name"] == "web"
+
+            async with client.post(
+                base + "/api/snapshot/tasks", data={"snapshot_id": "0"}
+            ) as resp:
+                assert resp.status == 200
+                tasks = await resp.json()
+                assert any(item["name"] == "web-sleeper" for item in tasks["running"])
+                assert "terminated" in tasks
+            async with client.post(
+                base + "/api/snapshot/trace",
+                data={"snapshot_id": "0", "task_id": task_id},
+            ) as resp:
+                assert resp.status == 200
+                trace = await resp.json()
+                assert any(item["type"] == "header" for item in trace["trace"])
+            async with client.post(
+                base + "/api/snapshot/stack",
+                data={"snapshot_id": "0", "task_id": task_id},
+            ) as resp:
+                assert resp.status == 200
+
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+            async with client.post(base + "/api/snapshot") as resp:
+                assert resp.status == 200
+                second = await resp.json()
+                assert second["id"] == 1
+            async with client.post(
+                base + "/api/snapshot/diff",
+                data={"snapshot_id_1": "0", "snapshot_id_2": "1"},
+            ) as resp:
+                assert resp.status == 200
+                diff = await resp.json()
+                assert any(item["task_id"] == task_id for item in diff["removed"])
+                assert "added" in diff
+                assert "common" in diff
+
+            async with client.delete(
+                base + "/api/snapshot", params={"snapshot_id": "0"}
+            ) as resp:
+                assert resp.status == 200
+                assert (await resp.json())["id"] == 0
+            async with client.delete(
+                base + "/api/snapshot", params={"snapshot_id": "0"}
+            ) as resp:
+                assert resp.status == 404
+            async with client.post(
+                base + "/api/snapshot/tasks", data={"snapshot_id": "99"}
+            ) as resp:
+                assert resp.status == 404
+            async with client.post(
+                base + "/api/snapshot/diff", data={"snapshot_id_1": "nope"}
+            ) as resp:
+                assert resp.status == 400
+
+            async with client.get(base + "/snapshots") as resp:
+                assert resp.status == 200
+                text = await resp.text()
+                assert "Snapshots" in text

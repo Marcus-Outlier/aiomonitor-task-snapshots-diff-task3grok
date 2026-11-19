@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import sys
+import time
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Mapping, Tuple
+from typing import TYPE_CHECKING, Any, Dict, Mapping, Tuple
 
 if sys.version_info >= (3, 11):
     from enum import StrEnum
@@ -16,6 +17,7 @@ from aiohttp import web
 from jinja2 import Environment, PackageLoader, select_autoescape
 from pydantic import Field
 
+from ..exceptions import MissingTask
 from .utils import APIParams, check_params
 
 if TYPE_CHECKING:
@@ -46,6 +48,28 @@ class ListFilterParams(APIParams):
     persistent: bool = Field(default=False)
 
 
+class SnapshotCreateParams(APIParams):
+    name: str = Field(default="")
+
+
+class SnapshotIdParams(APIParams):
+    snapshot_id: int
+
+
+class SnapshotTasksParams(ListFilterParams):
+    snapshot_id: int
+
+
+class SnapshotTraceParams(APIParams):
+    snapshot_id: int
+    task_id: str
+
+
+class SnapshotDiffParams(APIParams):
+    snapshot_id_1: int
+    snapshot_id_2: int
+
+
 @dataclasses.dataclass
 class NavigationItem:
     title: str
@@ -55,6 +79,10 @@ class NavigationItem:
 nav_menus: Mapping[str, NavigationItem] = {
     "/": NavigationItem(
         title="Dashboard",
+        current=False,
+    ),
+    "/snapshots": NavigationItem(
+        title="Snapshots",
         current=False,
     ),
     "/about": NavigationItem(
@@ -206,6 +234,169 @@ async def get_terminated_task_list(request: web.Request) -> web.Response:
         )
 
 
+def _running_task_payload(task: Any) -> Dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "state": task.state,
+        "name": task.name,
+        "coro": task.coro,
+        "created_location": task.created_location,
+        "since": task.since,
+        "is_root": task.created_location == "-",
+    }
+
+
+def _terminated_task_payload(task: Any) -> Dict[str, Any]:
+    return {
+        "task_id": task.task_id,
+        "name": task.name,
+        "coro": task.coro,
+        "started_since": task.started_since,
+        "terminated_since": task.terminated_since,
+    }
+
+
+def _snapshot_not_found(snapshot_id: int) -> web.Response:
+    return web.json_response(
+        status=404,
+        data={"msg": f"No snapshot {snapshot_id}"},
+    )
+
+
+async def create_snapshot(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    async with check_params(request, SnapshotCreateParams) as params:
+        name = params.name.strip() or None
+        snapshot_id = ctx.monitor.capture_snapshot(name)
+        return web.json_response(data={"id": snapshot_id})
+
+
+async def list_snapshots(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    return web.json_response(
+        data={
+            "snapshots": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "captured_at": item.captured_at,
+                    "running_count": item.running_count,
+                    "terminated_count": item.terminated_count,
+                }
+                for item in ctx.monitor.list_snapshots()
+            ]
+        }
+    )
+
+
+async def get_snapshot_tasks(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    async with check_params(request, SnapshotTasksParams) as params:
+        try:
+            running = ctx.monitor.format_snapshot_running_task_list(
+                params.snapshot_id,
+                params.filter,
+                params.persistent,
+            )
+            terminated = ctx.monitor.format_snapshot_terminated_task_list(
+                params.snapshot_id,
+                params.filter,
+                params.persistent,
+            )
+        except KeyError:
+            return _snapshot_not_found(params.snapshot_id)
+        return web.json_response(
+            data={
+                "running": [_running_task_payload(task) for task in running],
+                "terminated": [_terminated_task_payload(task) for task in terminated],
+            }
+        )
+
+
+async def get_snapshot_trace(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    async with check_params(request, SnapshotTraceParams) as params:
+        try:
+            try:
+                trace = ctx.monitor.format_snapshot_running_task_stack(
+                    params.snapshot_id,
+                    params.task_id,
+                )
+            except MissingTask:
+                trace = ctx.monitor.format_snapshot_terminated_task_stack(
+                    params.snapshot_id,
+                    params.task_id,
+                )
+        except KeyError:
+            return _snapshot_not_found(params.snapshot_id)
+        except MissingTask:
+            return web.json_response(
+                status=404,
+                data={"msg": f"No task {params.task_id}"},
+            )
+        return web.json_response(
+            data={
+                "trace": [
+                    {"type": item.type, "content": item.content} for item in trace
+                ]
+            }
+        )
+
+
+async def diff_snapshots(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    async with check_params(request, SnapshotDiffParams) as params:
+        try:
+            diff = ctx.monitor.format_snapshot_diff(
+                params.snapshot_id_1,
+                params.snapshot_id_2,
+            )
+        except KeyError as exc:
+            missing = exc.args[0] if exc.args else params.snapshot_id_1
+            return _snapshot_not_found(missing)
+        return web.json_response(
+            data={
+                "added": [_running_task_payload(task) for task in diff.added],
+                "removed": [_running_task_payload(task) for task in diff.removed],
+                "common": [_running_task_payload(task) for task in diff.common],
+            }
+        )
+
+
+async def delete_snapshot(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    async with check_params(request, SnapshotIdParams) as params:
+        try:
+            ctx.monitor.delete_snapshot(params.snapshot_id)
+        except KeyError:
+            return _snapshot_not_found(params.snapshot_id)
+        return web.json_response(data={"id": params.snapshot_id})
+
+
+async def show_snapshots_page(request: web.Request) -> web.Response:
+    ctx: WebUIContext = request.app[ctx_key]
+    nav_info, nav_items = get_navigation_info(request.path)
+    template = ctx.jenv.get_template("snapshots.html")
+    snapshots = [
+        {
+            "id": item.id,
+            "name": item.name or "-",
+            "captured_at": time.strftime(
+                "%Y-%m-%d %H:%M:%S", time.localtime(item.captured_at)
+            ),
+            "running_count": item.running_count,
+            "terminated_count": item.terminated_count,
+        }
+        for item in ctx.monitor.list_snapshots()
+    ]
+    output = template.render(
+        navigation=nav_items,
+        page={"title": nav_info.title},
+        snapshots=snapshots,
+    )
+    return web.Response(body=output, content_type="text/html")
+
+
 async def cancel_task(request: web.Request) -> web.Response:
     ctx: WebUIContext = request.app[ctx_key]
     async with check_params(request, TaskIdParams) as params:
@@ -235,6 +426,7 @@ async def init_webui(monitor: Monitor) -> web.Application:
     )
     app.router.add_route("GET", "/", show_list_page)
     app.router.add_route("GET", "/about", show_about_page)
+    app.router.add_route("GET", "/snapshots", show_snapshots_page)
     app.router.add_route("GET", "/trace-running", show_trace_page)
     app.router.add_route("GET", "/trace-terminated", show_trace_page)
     app.router.add_route("GET", "/api/version", get_version)
@@ -242,5 +434,13 @@ async def init_webui(monitor: Monitor) -> web.Application:
     app.router.add_route("POST", "/api/live-tasks", get_live_task_list)
     app.router.add_route("POST", "/api/terminated-tasks", get_terminated_task_list)
     app.router.add_route("DELETE", "/api/task", cancel_task)
+    app.router.add_route("POST", "/api/snapshot", create_snapshot)
+    app.router.add_route("GET", "/api/snapshot", list_snapshots)
+    app.router.add_route("GET", "/api/snapshot/list", list_snapshots)
+    app.router.add_route("POST", "/api/snapshot/tasks", get_snapshot_tasks)
+    app.router.add_route("POST", "/api/snapshot/trace", get_snapshot_trace)
+    app.router.add_route("POST", "/api/snapshot/stack", get_snapshot_trace)
+    app.router.add_route("POST", "/api/snapshot/diff", diff_snapshots)
+    app.router.add_route("DELETE", "/api/snapshot", delete_snapshot)
     app.router.add_static("/static", Path(__file__).parent / "static")
     return app
