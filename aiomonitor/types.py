@@ -101,6 +101,22 @@ class TaskSnapshot:
 
 
 @dataclass(frozen=True)
+class TaskSnapshotSummary:
+    """Short description of one retained snapshot.
+
+    ``name`` is the optional label. ``captured_at`` is the Unix time the
+    snapshot was taken. The counts are how many running and terminated tasks
+    were frozen.
+    """
+
+    id: int
+    name: Optional[str]
+    captured_at: float
+    running_count: int
+    terminated_count: int
+
+
+@dataclass(frozen=True)
 class TaskSnapshotDiff:
     """Difference between two task snapshots, from left to right."""
 

@@ -33,7 +33,7 @@ import janus
 from aiohttp import web
 from prompt_toolkit.contrib.telnet.server import TelnetServer
 
-from .exceptions import MissingSnapshot, MissingTask
+from .exceptions import MissingTask
 from .task import TracedTask, persistent_coro
 from .termui.commands import interact
 from .types import (
@@ -45,6 +45,7 @@ from .types import (
     LiveTaskSnapshot,
     TaskSnapshot,
     TaskSnapshotDiff,
+    TaskSnapshotSummary,
     TerminatedTaskInfo,
     TerminatedTaskSnapshot,
 )
@@ -138,8 +139,11 @@ class Monitor:
         console_enabled: bool = True,
         hook_task_factory: bool = False,
         max_termination_history: int = 1000,
+        max_snapshots: int = 20,
         locals: Optional[Dict[str, Any]] = None,
     ) -> None:
+        if max_snapshots < 0:
+            raise ValueError("max_snapshots must be zero or greater")
         self._monitored_loop = loop or asyncio.get_running_loop()
         self._host = host
         self._termui_port = termui_port
@@ -173,6 +177,7 @@ class Monitor:
         self._canceller_stacks = {}
         self._terminated_history = []
         self._max_termination_history = max_termination_history
+        self._max_snapshots = max_snapshots
         self._snapshots: Dict[int, TaskSnapshot] = {}
         self._next_snapshot_id = 0
 
@@ -525,8 +530,9 @@ class Monitor:
         Freeze the running and terminated tasks as they are right now.
 
         Snapshot ids start at zero and increase by one for each capture on
-        this monitor. ``label`` is stored for display and may be omitted.
-        Returns the new snapshot id.
+        this monitor. ``label`` is stored as the snapshot name and may be
+        omitted. When more than ``max_snapshots`` captures are retained, the
+        oldest one is dropped. Returns the new snapshot id.
         """
         if label is not None:
             label = label.strip() or None
@@ -581,18 +587,38 @@ class Monitor:
             running=tuple(running),
             terminated=tuple(terminated),
         )
+        while len(self._snapshots) > self._max_snapshots:
+            del self._snapshots[min(self._snapshots)]
         return snapshot_id
 
     def get_snapshot(self, snapshot_id: int) -> TaskSnapshot:
-        """Return one captured snapshot, or raise ``MissingSnapshot``."""
-        try:
-            return self._snapshots[snapshot_id]
-        except KeyError:
-            raise MissingSnapshot(snapshot_id) from None
+        """
+        Return one retained snapshot.
 
-    def list_snapshots(self) -> Sequence[TaskSnapshot]:
-        """Return captured snapshots in id order, starting at zero."""
-        return tuple(self._snapshots[sid] for sid in sorted(self._snapshots))
+        A missing or discarded id raises ``KeyError``.
+        """
+        return self._snapshots[snapshot_id]
+
+    def list_snapshots(self) -> Sequence[TaskSnapshotSummary]:
+        """
+        Return a summary of each retained snapshot, oldest id first.
+
+        Each summary has the snapshot id, its name, the time it was captured,
+        and the running and terminated task counts.
+        """
+        summaries = []
+        for sid in sorted(self._snapshots):
+            snap = self._snapshots[sid]
+            summaries.append(
+                TaskSnapshotSummary(
+                    id=snap.id,
+                    name=snap.label,
+                    captured_at=snap.captured_at,
+                    running_count=len(snap.running),
+                    terminated_count=len(snap.terminated),
+                )
+            )
+        return tuple(summaries)
 
     def diff_snapshots(self, left_id: int, right_id: int) -> TaskSnapshotDiff:
         """
@@ -780,6 +806,7 @@ def start_monitor(
     console_enabled: bool = True,
     hook_task_factory: bool = False,
     max_termination_history: Optional[int] = None,
+    max_snapshots: Optional[int] = None,
     locals: Optional[Dict[str, Any]] = None,
 ) -> Monitor:
     """
@@ -795,6 +822,8 @@ def start_monitor(
         to start with instance of monitor.
     :param dict locals: dictionary with variables exposed in python console
         environment
+    :param int max_snapshots: how many task snapshots to keep. The oldest
+        snapshots are dropped past this limit. Defaults to 20.
     """
     m = monitor_cls(
         loop,
@@ -808,6 +837,11 @@ def start_monitor(
             max_termination_history
             if max_termination_history is not None
             else get_default_args(monitor_cls.__init__)["max_termination_history"]
+        ),
+        max_snapshots=(
+            max_snapshots
+            if max_snapshots is not None
+            else get_default_args(monitor_cls.__init__)["max_snapshots"]
         ),
         locals=locals,
     )

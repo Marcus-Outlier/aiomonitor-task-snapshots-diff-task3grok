@@ -86,7 +86,10 @@ Once connection established, one can type commands, for instance ``help``::
 ``snapshot`` stores the running tasks and the terminated tasks as they are at
 that moment and prints the new snapshot id. Ids start at zero, and the label
 is optional (``snapshot my-label`` or ``snapshot --label my-label``).
-``snapshots`` lists the captures. ``ps``, ``ps-terminated``, ``where``, and
+``snapshots`` lists a summary of each retained capture: id, name, capture time,
+and the running and terminated counts. The monitor keeps 20 snapshots and drops
+the oldest. Asking for an id that was never captured, or that has been dropped,
+raises ``KeyError``. ``ps``, ``ps-terminated``, ``where``, and
 ``where-terminated`` accept ``--snapshot ID`` to read the frozen data.
 ``snapshot-diff LEFT RIGHT`` (alias ``diff``) compares two snapshots.
 

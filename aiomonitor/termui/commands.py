@@ -23,7 +23,7 @@ from terminaltables import AsciiTable
 
 from .. import console
 from ..context import command_done, current_monitor, current_stdout
-from ..exceptions import MissingSnapshot, MissingTask
+from ..exceptions import MissingTask
 from ..types import (
     FormatItemTypes,
     FormattedLiveTaskInfo,
@@ -118,8 +118,8 @@ def _write_stack(
 def _lookup_snapshot(monitor: Monitor, snapshot_id: int) -> Optional[TaskSnapshot]:
     try:
         return monitor.get_snapshot(snapshot_id)
-    except MissingSnapshot as e:
-        print_fail(f"No snapshot {e.snapshot_id}")
+    except KeyError:
+        print_fail(f"No snapshot {snapshot_id}")
         return None
 
 
@@ -781,7 +781,7 @@ def do_snapshot(
 @auto_command_done
 def do_snapshots(ctx: click.Context) -> None:
     """List captured snapshots"""
-    headers = ("Snapshot ID", "Label", "Captured", "Running", "Terminated")
+    headers = ("ID", "Name", "Captured", "Running", "Terminated")
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     snapshots = self.list_snapshots()
@@ -789,10 +789,10 @@ def do_snapshots(ctx: click.Context) -> None:
     for snapshot in snapshots:
         table_data.append((
             str(snapshot.id),
-            _snapshot_label(snapshot),
+            snapshot.name if snapshot.name else "-",
             _format_captured_at(snapshot.captured_at),
-            str(len(snapshot.running)),
-            str(len(snapshot.terminated)),
+            str(snapshot.running_count),
+            str(snapshot.terminated_count),
         ))
     table = AsciiTable(table_data)
     table.inner_row_border = False
@@ -814,8 +814,9 @@ def do_snapshot_diff(ctx: click.Context, left_id: int, right_id: int) -> None:
     stdout = _get_current_stdout()
     try:
         diff = self.diff_snapshots(left_id, right_id)
-    except MissingSnapshot as e:
-        print_fail(f"No snapshot {e.snapshot_id}")
+    except KeyError as e:
+        missing = e.args[0] if e.args else left_id
+        print_fail(f"No snapshot {missing}")
         return
     left = self.get_snapshot(left_id)
     right = self.get_snapshot(right_id)

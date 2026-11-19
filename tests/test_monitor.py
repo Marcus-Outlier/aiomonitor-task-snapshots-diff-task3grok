@@ -343,6 +343,17 @@ async def test_task_snapshots(event_loop):
         assert "after" in resp
         assert "later" in resp
         assert "4 snapshots captured" in resp
+        summaries = monitor.list_snapshots()
+        assert [item.id for item in summaries] == [0, 1, 2, 3]
+        assert [item.name for item in summaries] == ["before", None, "after", "later"]
+        assert summaries[0].running_count >= 1
+        assert summaries[0].captured_at > 0
+        assert all(item.terminated_count >= 0 for item in summaries)
+
+        with pytest.raises(KeyError):
+            monitor.get_snapshot(9)
+        with pytest.raises(KeyError):
+            monitor.diff_snapshots(0, 8)
 
         resp = await invoke_command(monitor, ["diff", "0", "1"])
         assert "snap-sleeper" in resp
@@ -357,3 +368,42 @@ async def test_task_snapshots(event_loop):
 
         with pytest.raises(click.UsageError):
             await invoke_command(monitor, ["ps", "123"])
+
+
+@pytest.mark.asyncio
+async def test_snapshot_retention(event_loop):
+    with Monitor(event_loop, console_enabled=False, max_snapshots=2) as monitor:
+        first = monitor.capture_snapshot("oldest")
+        second = monitor.capture_snapshot("kept")
+        third = monitor.capture_snapshot("newest")
+        assert [item.id for item in monitor.list_snapshots()] == [second, third]
+        assert [item.name for item in monitor.list_snapshots()] == ["kept", "newest"]
+        with pytest.raises(KeyError):
+            monitor.get_snapshot(first)
+        kept = monitor.get_snapshot(second)
+        assert kept.label == "kept"
+        assert monitor.list_snapshots()[0].running_count == len(kept.running)
+        assert monitor.list_snapshots()[0].terminated_count == len(kept.terminated)
+
+    with start_monitor(event_loop, console_enabled=False, max_snapshots=1) as monitor:
+        monitor.capture_snapshot("drop-me")
+        kept_id = monitor.capture_snapshot("only")
+        listed = monitor.list_snapshots()
+        assert len(listed) == 1
+        assert listed[0].id == kept_id
+        assert listed[0].name == "only"
+        with pytest.raises(KeyError):
+            monitor.get_snapshot(0)
+
+    with Monitor(event_loop, console_enabled=False) as monitor:
+        assert monitor._max_snapshots == 20
+        for index in range(21):
+            monitor.capture_snapshot(f"n{index}")
+        listed = monitor.list_snapshots()
+        assert len(listed) == 20
+        assert listed[0].id == 1
+        assert listed[0].name == "n1"
+        assert listed[-1].id == 20
+        assert listed[-1].name == "n20"
+        with pytest.raises(KeyError):
+            monitor.get_snapshot(0)

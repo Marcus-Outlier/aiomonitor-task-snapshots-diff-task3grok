@@ -1,1 +1,1 @@
-Add task snapshots that freeze the running and terminated tasks, list them, and diff two captures
+Add task snapshots that freeze the running and terminated tasks, list a summary of each capture, and diff two snapshots. Monitors keep 20 snapshots and drop the oldest.
