@@ -51,7 +51,7 @@ Chat = "https://matrix.to/#/!aio-libs:matrix.org"
 
 [dependency-groups]
 dev = [
-    "aioconsole==0.8.2",
+    "aioconsole==0.9.0",
     "aiohttp==3.10.10",
     "aiotools==1.7.0",
     "attrs==24.2.0",
