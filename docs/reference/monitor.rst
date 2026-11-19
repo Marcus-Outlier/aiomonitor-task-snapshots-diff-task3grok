@@ -48,6 +48,8 @@ The Monitor
 
    .. automethod:: get_snapshot
 
+   .. automethod:: delete_snapshot
+
    .. automethod:: list_snapshots
 
    .. automethod:: format_snapshot_running_task_list

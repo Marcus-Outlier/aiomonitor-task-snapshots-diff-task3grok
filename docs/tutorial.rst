@@ -76,22 +76,20 @@ Once connection established, one can type commands, for instance ``help``::
       ps (p)                  Show task table
       ps-terminated (pst,pt)  List recently terminated/cancelled tasks
       signal                  Send a Unix signal
-      snapshot (snap)         Capture running and terminated tasks
-      snapshot-diff (diff,sd) Compare two captured snapshots
-      snapshots (snaps)       List captured snapshots
+      snapshot (snap)         Capture, inspect, and compare task snapshots
       stacktrace (st,stack)   Print a stack trace from the event loop thread
       where (w)               Show stack frames and the task creation chain of a task
       where-terminated (wt)   Show stack frames and the termination/cancellation chain of a task
 
-``snapshot`` stores the running tasks and the terminated tasks as they are at
-that moment and prints the new snapshot id. Ids start at zero, and the label
-is optional (``snapshot my-label`` or ``snapshot --label my-label``).
-``snapshots`` lists a summary of each retained capture: id, name, capture time,
-and the running and terminated counts. The monitor keeps 20 snapshots and drops
-the oldest. Asking for an id that was never captured, or that has been dropped,
-raises ``KeyError``. ``ps``, ``ps-terminated``, ``where``, and
-``where-terminated`` accept ``--snapshot ID`` to read the frozen data.
-``snapshot-diff LEFT RIGHT`` (alias ``diff``) compares two snapshots.
+``snapshot`` is a command group dispatched like the other monitor commands.
+``snapshot save --name NAME`` stores the running and terminated tasks and
+prints the new id with that name. Ids start at zero. ``snapshot list``
+(alias ``ls``) prints each retained snapshot's id, name, capture time, and
+task counts. ``snapshot show ID`` and ``snapshot where ID TASK`` read the
+frozen tables and stacks. ``snapshot diff LEFT RIGHT`` compares two snapshots.
+``snapshot delete ID`` drops one. An invalid snapshot id prints an error
+instead of raising. The monitor keeps 20 snapshots and drops the oldest.
+A missing id still raises ``KeyError`` from the Python API.
 
 Additional commands can be added by defining a Click command function injected into :ref:`the monitor CLI <monitor-cli>`, see below :ref:`cust-commands`.
 

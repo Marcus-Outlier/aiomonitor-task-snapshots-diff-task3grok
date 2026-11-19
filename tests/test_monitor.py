@@ -345,11 +345,12 @@ async def test_task_snapshots(event_loop):
         with pytest.raises(MissingTask):
             monitor.format_snapshot_running_task_stack(0, "999999")
 
-        resp = await invoke_command(monitor, ["ps", "--snapshot", "0"])
+        resp = await invoke_command(monitor, ["snapshot", "show", "0"])
         assert "snap-sleeper" in resp
-        assert "(snapshot 0)" in resp
-        resp = await invoke_command(monitor, ["where", "--snapshot", "0", task_id])
+        assert "Snapshot 0 (before)" in resp
+        resp = await invoke_command(monitor, ["snapshot", "where", "0", task_id])
         assert "snap-sleeper" in resp or "sleeper" in resp
+        assert "Snapshot 0 (before)" in resp
 
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -358,8 +359,9 @@ async def test_task_snapshots(event_loop):
 
         resp = await invoke_command(monitor, ["ps"])
         assert "snap-sleeper" not in resp
-        resp = await invoke_command(monitor, ["ps", "--snapshot", "0"])
+        resp = await invoke_command(monitor, ["snapshot", "show", "0"])
         assert "snap-sleeper" in resp
+        assert "Snapshot 0 (before)" in resp
 
         second_id = monitor.capture_snapshot()
         assert second_id == 2
@@ -379,11 +381,11 @@ async def test_task_snapshots(event_loop):
         assert any(item.task_id == task_id for item in diff.removed)
         assert all(isinstance(item, FormattedLiveTaskInfo) for item in diff.removed)
 
-        resp = await invoke_command(monitor, ["snapshot", "after"])
+        resp = await invoke_command(monitor, ["snapshot", "save", "--name", "after"])
         assert "Captured snapshot 3 (after)" in resp
-        resp = await invoke_command(monitor, ["snapshot", "--label", "later"])
+        resp = await invoke_command(monitor, ["snap", "save", "--name", "later"])
         assert "Captured snapshot 4 (later)" in resp
-        resp = await invoke_command(monitor, ["snapshots"])
+        resp = await invoke_command(monitor, ["snapshot", "ls"])
         assert "before" in resp
         assert "after" in resp
         assert "later" in resp
@@ -410,14 +412,24 @@ async def test_task_snapshots(event_loop):
         with pytest.raises(KeyError):
             monitor.format_snapshot_terminated_task_list(8, "", False)
 
-        resp = await invoke_command(monitor, ["diff", "0", str(second_id)])
+        resp = await invoke_command(monitor, ["snapshot", "diff", "0", str(second_id)])
+        assert "Snapshot 0 (before)" in resp
         assert "snap-sleeper" in resp
         assert "removed" in resp
 
-        resp = await invoke_command(monitor, ["ps", "--snapshot", "9"])
-        assert "No snapshot 9" in resp
-        resp = await invoke_command(monitor, ["snapshot-diff", "0", "8"])
-        assert "No snapshot 8" in resp
+        resp = await invoke_command(monitor, ["snapshot", "show", "9"])
+        assert "Invalid snapshot id: 9" in resp
+        resp = await invoke_command(monitor, ["snapshot", "where", "nope", task_id])
+        assert "Invalid snapshot id: nope" in resp
+        resp = await invoke_command(monitor, ["snapshot", "diff", "0", "8"])
+        assert "Invalid snapshot id: 8" in resp
+        resp = await invoke_command(monitor, ["snapshot", "delete", "4"])
+        assert "Deleted snapshot 4 (later)" in resp
+        assert all(item.id != 4 for item in monitor.list_snapshots())
+        with pytest.raises(KeyError):
+            monitor.get_snapshot(4)
+        resp = await invoke_command(monitor, ["snapshot", "delete", "4"])
+        assert "Invalid snapshot id: 4" in resp
 
         with pytest.raises(click.UsageError):
             await invoke_command(monitor, ["ps", "123"])

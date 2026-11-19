@@ -610,6 +610,10 @@ class Monitor:
         """
         return self._snapshots[snapshot_id]
 
+    def delete_snapshot(self, snapshot_id: int) -> None:
+        """Delete one retained snapshot. A missing id raises ``KeyError``."""
+        del self._snapshots[snapshot_id]
+
     def list_snapshots(self) -> Sequence[TaskSnapshotSummary]:
         """
         Return a summary of each retained snapshot, oldest id first.

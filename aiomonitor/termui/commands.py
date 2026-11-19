@@ -424,22 +424,12 @@ def do_console(ctx: click.Context) -> None:
 @monitor_cli.command(name="ps", aliases=["p"])
 @click.option("-f", "--filter", "filter_", help="filter by coroutine or task name")
 @click.option("-p", "--persistent", is_flag=True, help="show only persistent tasks")
-@click.option(
-    "-s",
-    "--snapshot",
-    "snapshot_id",
-    type=int,
-    default=None,
-    shell_complete=complete_snapshot_id,
-    help="show a captured snapshot instead of the live tasks",
-)
 @custom_help_option
 @auto_command_done
 def do_ps(
     ctx: click.Context,
     filter_: str,
     persistent: bool,
-    snapshot_id: Optional[int],
 ) -> None:
     """Show task table"""
     headers = (
@@ -453,16 +443,7 @@ def do_ps(
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
-    if snapshot_id is not None:
-        try:
-            tasks = list(
-                self.format_snapshot_running_task_list(snapshot_id, filter_, persistent)
-            )
-        except KeyError:
-            print_fail(f"No snapshot {snapshot_id}")
-            return
-    else:
-        tasks = list(self.format_running_task_list(filter_, persistent))
+    tasks = self.format_running_task_list(filter_, persistent)
     for task in tasks:
         table_data.append((
             task.task_id,
@@ -475,9 +456,7 @@ def do_ps(
     table = AsciiTable(table_data)
     table.inner_row_border = False
     table.inner_column_border = False
-    if snapshot_id is not None:
-        stdout.write(f"{len(tasks)} tasks running (snapshot {snapshot_id})\n")
-    elif filter_ or persistent:
+    if filter_ or persistent:
         stdout.write(
             f"{len(tasks)} tasks running (showing {len(table_data) - 1} tasks)\n"
         )
@@ -491,22 +470,12 @@ def do_ps(
 @monitor_cli.command(name="ps-terminated", aliases=["pt", "pst"])
 @click.option("-f", "--filter", "filter_", help="filter by coroutine or task name")
 @click.option("-p", "--persistent", is_flag=True, help="show only persistent tasks")
-@click.option(
-    "-s",
-    "--snapshot",
-    "snapshot_id",
-    type=int,
-    default=None,
-    shell_complete=complete_snapshot_id,
-    help="show a captured snapshot instead of the live termination log",
-)
 @custom_help_option
 @auto_command_done
 def do_ps_terminated(
     ctx: click.Context,
     filter_: str,
     persistent: bool,
-    snapshot_id: Optional[int],
 ) -> None:
     """List recently terminated/cancelled tasks"""
     headers = (
@@ -519,18 +488,7 @@ def do_ps_terminated(
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str]] = [headers]
-    if snapshot_id is not None:
-        try:
-            tasks = list(
-                self.format_snapshot_terminated_task_list(
-                    snapshot_id, filter_, persistent
-                )
-            )
-        except KeyError:
-            print_fail(f"No snapshot {snapshot_id}")
-            return
-    else:
-        tasks = list(self.format_terminated_task_list(filter_, persistent))
+    tasks = self.format_terminated_task_list(filter_, persistent)
     for task in tasks:
         table_data.append((
             task.task_id,
@@ -542,9 +500,7 @@ def do_ps_terminated(
     table = AsciiTable(table_data)
     table.inner_row_border = False
     table.inner_column_border = False
-    if snapshot_id is not None:
-        stdout.write(f"{len(tasks)} tasks terminated (snapshot {snapshot_id})\n")
-    elif filter_ or persistent:
+    if filter_ or persistent:
         stdout.write(
             f"{len(tasks)} tasks terminated (showing {len(table_data) - 1} tasks)\n"
         )
@@ -557,38 +513,12 @@ def do_ps_terminated(
 
 @monitor_cli.command(name="where", aliases=["w"])
 @click.argument("taskid", shell_complete=complete_task_id)
-@click.option(
-    "-s",
-    "--snapshot",
-    "snapshot_id",
-    type=int,
-    default=None,
-    shell_complete=complete_snapshot_id,
-    help="read the stack from a captured snapshot",
-)
 @custom_help_option
 @auto_command_done
-def do_where(
-    ctx: click.Context,
-    taskid: str,
-    snapshot_id: Optional[int],
-) -> None:
+def do_where(ctx: click.Context, taskid: str) -> None:
     """Show stack frames and the task creation chain of a task"""
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
-    if snapshot_id is not None:
-        try:
-            formatted_stack_list = self.format_snapshot_running_task_stack(
-                snapshot_id, taskid
-            )
-        except KeyError:
-            print_fail(f"No snapshot {snapshot_id}")
-            return
-        except MissingTask as e:
-            print_fail(f"No task {e.task_id}")
-            return
-        _write_stack(stdout, formatted_stack_list)
-        return
     try:
         formatted_stack_list = self.format_running_task_stack(taskid)
     except MissingTask as e:
@@ -599,38 +529,12 @@ def do_where(
 
 @monitor_cli.command(name="where-terminated", aliases=["wt"])
 @click.argument("trace_id", shell_complete=complete_trace_id)
-@click.option(
-    "-s",
-    "--snapshot",
-    "snapshot_id",
-    type=int,
-    default=None,
-    shell_complete=complete_snapshot_id,
-    help="read the stack from a captured snapshot",
-)
 @custom_help_option
 @auto_command_done
-def do_where_terminated(
-    ctx: click.Context,
-    trace_id: str,
-    snapshot_id: Optional[int],
-) -> None:
+def do_where_terminated(ctx: click.Context, trace_id: str) -> None:
     """Show stack frames and the termination/cancellation chain of a task"""
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
-    if snapshot_id is not None:
-        try:
-            formatted_stack_list = self.format_snapshot_terminated_task_stack(
-                snapshot_id, trace_id
-            )
-        except KeyError:
-            print_fail(f"No snapshot {snapshot_id}")
-            return
-        except MissingTask as e:
-            print_fail(f"No task {e.task_id}")
-            return
-        _write_stack(stdout, formatted_stack_list)
-        return
     try:
         formatted_stack_list = self.format_terminated_task_stack(trace_id)
     except MissingTask as e:
@@ -645,6 +549,24 @@ def _format_captured_at(captured_at: float) -> str:
 
 def _snapshot_label(snapshot: TaskSnapshot) -> str:
     return snapshot.label if snapshot.label else "-"
+
+
+def _resolve_snapshot(monitor: Monitor, raw: str) -> Optional[TaskSnapshot]:
+    """Return a snapshot, or print an error for an invalid argument."""
+    try:
+        snapshot_id = int(str(raw).strip())
+    except (TypeError, ValueError):
+        print_fail(f"Invalid snapshot id: {raw}")
+        return None
+    try:
+        return monitor.get_snapshot(snapshot_id)
+    except KeyError:
+        print_fail(f"Invalid snapshot id: {snapshot_id}")
+        return None
+
+
+def _echo_snapshot_name(stdout: TextIO, snapshot: TaskSnapshot) -> None:
+    stdout.write(f"Snapshot {snapshot.id} ({_snapshot_label(snapshot)})\n")
 
 
 def _write_snapshot_diff(
@@ -668,36 +590,32 @@ def _write_snapshot_diff(
     stdout.flush()
 
 
-@monitor_cli.command(name="snapshot", aliases=["snap"])
+@monitor_cli.group(name="snapshot", aliases=["snap"])
+def snapshot_cli() -> None:
+    """Capture, inspect, and compare task snapshots"""
+
+
+@snapshot_cli.command(name="save")
 @click.option(
-    "-l",
-    "--label",
-    "label",
-    default=None,
-    help="optional label stored with the snapshot",
+    "--name", "name", default=None, help="optional name stored with the snapshot"
 )
-@click.argument("label_arg", required=False, metavar="LABEL")
 @custom_help_option
 @auto_command_done
-def do_snapshot(
-    ctx: click.Context,
-    label: Optional[str],
-    label_arg: Optional[str],
-) -> None:
+def do_snapshot_save(ctx: click.Context, name: Optional[str]) -> None:
     """Capture running and terminated tasks"""
     self: Monitor = ctx.obj
-    chosen = label if label is not None else label_arg
+    chosen = name.strip() if name and name.strip() else None
     snapshot_id = self.capture_snapshot(chosen)
-    if chosen and chosen.strip():
-        print_ok(f"Captured snapshot {snapshot_id} ({chosen.strip()})")
+    if chosen:
+        print_ok(f"Captured snapshot {snapshot_id} ({chosen})")
     else:
         print_ok(f"Captured snapshot {snapshot_id}")
 
 
-@monitor_cli.command(name="snapshots", aliases=["snaps"])
+@snapshot_cli.command(name="list", aliases=["ls"])
 @custom_help_option
 @auto_command_done
-def do_snapshots(ctx: click.Context) -> None:
+def do_snapshot_list(ctx: click.Context) -> None:
     """List captured snapshots"""
     headers = ("ID", "Name", "Captured", "Running", "Terminated")
     self: Monitor = ctx.obj
@@ -721,21 +639,131 @@ def do_snapshots(ctx: click.Context) -> None:
     stdout.flush()
 
 
-@monitor_cli.command(name="snapshot-diff", aliases=["diff", "sd"])
-@click.argument("left_id", type=int, shell_complete=complete_snapshot_id)
-@click.argument("right_id", type=int, shell_complete=complete_snapshot_id)
+def _write_running_rows(stdout: TextIO, tasks: Sequence) -> None:
+    headers = (
+        "Task ID",
+        "State",
+        "Name",
+        "Coroutine",
+        "Created Location",
+        "Since",
+    )
+    table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
+    for task in tasks:
+        table_data.append((
+            task.task_id,
+            task.state,
+            task.name,
+            task.coro,
+            task.created_location,
+            task.since,
+        ))
+    table = AsciiTable(table_data)
+    table.inner_row_border = False
+    table.inner_column_border = False
+    stdout.write(f"{len(tasks)} tasks running\n")
+    stdout.write(table.table)
+    stdout.write("\n")
+
+
+def _write_terminated_rows(stdout: TextIO, tasks: Sequence) -> None:
+    headers = (
+        "Trace ID",
+        "Name",
+        "Coro",
+        "Since Started",
+        "Since Terminated",
+    )
+    table_data: List[Tuple[str, str, str, str, str]] = [headers]
+    for task in tasks:
+        table_data.append((
+            task.task_id,
+            task.name,
+            task.coro,
+            task.started_since,
+            task.terminated_since,
+        ))
+    table = AsciiTable(table_data)
+    table.inner_row_border = False
+    table.inner_column_border = False
+    stdout.write(f"{len(tasks)} tasks terminated\n")
+    stdout.write(table.table)
+    stdout.write("\n")
+
+
+@snapshot_cli.command(name="show")
+@click.argument("snapshot_id", shell_complete=complete_snapshot_id)
 @custom_help_option
 @auto_command_done
-def do_snapshot_diff(ctx: click.Context, left_id: int, right_id: int) -> None:
+def do_snapshot_show(ctx: click.Context, snapshot_id: str) -> None:
+    """Show the frozen running and terminated tasks"""
+    self: Monitor = ctx.obj
+    stdout = _get_current_stdout()
+    snapshot = _resolve_snapshot(self, snapshot_id)
+    if snapshot is None:
+        return
+    _echo_snapshot_name(stdout, snapshot)
+    _write_running_rows(
+        stdout, self.format_snapshot_running_task_list(snapshot.id, "", False)
+    )
+    _write_terminated_rows(
+        stdout, self.format_snapshot_terminated_task_list(snapshot.id, "", False)
+    )
+    stdout.flush()
+
+
+@snapshot_cli.command(name="where")
+@click.argument("snapshot_id", shell_complete=complete_snapshot_id)
+@click.argument("task_id", shell_complete=complete_task_id)
+@custom_help_option
+@auto_command_done
+def do_snapshot_where(ctx: click.Context, snapshot_id: str, task_id: str) -> None:
+    """Show the frozen stack of one task in a snapshot"""
+    self: Monitor = ctx.obj
+    stdout = _get_current_stdout()
+    snapshot = _resolve_snapshot(self, snapshot_id)
+    if snapshot is None:
+        return
+    _echo_snapshot_name(stdout, snapshot)
+    try:
+        stack = self.format_snapshot_running_task_stack(snapshot.id, task_id)
+    except MissingTask:
+        try:
+            stack = self.format_snapshot_terminated_task_stack(snapshot.id, task_id)
+        except MissingTask as e:
+            print_fail(f"No task {e.task_id}")
+            return
+    _write_stack(stdout, stack)
+
+
+@snapshot_cli.command(name="diff")
+@click.argument("left_id", shell_complete=complete_snapshot_id)
+@click.argument("right_id", shell_complete=complete_snapshot_id)
+@custom_help_option
+@auto_command_done
+def do_snapshot_diff(ctx: click.Context, left_id: str, right_id: str) -> None:
     """Compare two captured snapshots"""
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
-    try:
-        diff = self.format_snapshot_diff(left_id, right_id)
-    except KeyError as e:
-        missing = e.args[0] if e.args else left_id
-        print_fail(f"No snapshot {missing}")
+    left = _resolve_snapshot(self, left_id)
+    if left is None:
         return
-    left = self.get_snapshot(left_id)
-    right = self.get_snapshot(right_id)
+    right = _resolve_snapshot(self, right_id)
+    if right is None:
+        return
+    diff = self.format_snapshot_diff(left.id, right.id)
     _write_snapshot_diff(stdout, diff, left, right)
+
+
+@snapshot_cli.command(name="delete")
+@click.argument("snapshot_id", shell_complete=complete_snapshot_id)
+@custom_help_option
+@auto_command_done
+def do_snapshot_delete(ctx: click.Context, snapshot_id: str) -> None:
+    """Delete one captured snapshot"""
+    self: Monitor = ctx.obj
+    snapshot = _resolve_snapshot(self, snapshot_id)
+    if snapshot is None:
+        return
+    self.delete_snapshot(snapshot.id)
+    print_ok(f"Deleted snapshot {snapshot.id} ({_snapshot_label(snapshot)})")
