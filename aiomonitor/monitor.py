@@ -40,11 +40,11 @@ from .types import (
     CancellationChain,
     FormatItemTypes,
     FormattedLiveTaskInfo,
+    FormattedSnapshotDiff,
     FormattedStackItem,
     FormattedTerminatedTaskInfo,
     LiveTaskSnapshot,
     TaskSnapshot,
-    TaskSnapshotDiff,
     TaskSnapshotSummary,
     TerminatedTaskInfo,
     TerminatedTaskSnapshot,
@@ -91,16 +91,27 @@ async def cancel_task(task: "asyncio.Task[Any]") -> None:
         await task
 
 
-def _live_task_signature(
-    task: LiveTaskSnapshot,
-) -> tuple[str, str, str, str, bool]:
-    return (task.state, task.name, task.coro, task.created_location, task.persistent)
+def _formatted_live_task(task: LiveTaskSnapshot) -> FormattedLiveTaskInfo:
+    return FormattedLiveTaskInfo(
+        task.task_id,
+        task.state,
+        task.name,
+        task.coro,
+        task.created_location,
+        task.since,
+    )
 
 
-def _terminated_task_signature(
+def _formatted_terminated_task(
     task: TerminatedTaskSnapshot,
-) -> tuple[str, str, bool, bool]:
-    return (task.name, task.coro, task.persistent, task.cancelled)
+) -> FormattedTerminatedTaskInfo:
+    return FormattedTerminatedTaskInfo(
+        task.task_id,
+        task.name,
+        task.coro,
+        task.started_since,
+        task.terminated_since,
+    )
 
 
 class Monitor:
@@ -620,56 +631,109 @@ class Monitor:
             )
         return tuple(summaries)
 
-    def diff_snapshots(self, left_id: int, right_id: int) -> TaskSnapshotDiff:
+    def format_snapshot_running_task_list(
+        self,
+        snapshot_id: int,
+        filter_: str = "",
+        persistent: bool = False,
+    ) -> Sequence[FormattedLiveTaskInfo]:
         """
-        Compare two snapshots.
+        Return the frozen running tasks in the same shape as
+        ``format_running_task_list``.
 
-        Added tasks are present only on the right. Removed tasks are present
-        only on the left. A task that is in both is changed when its identity
-        fields differ. Elapsed-time strings are not compared, because those
-        move even when the task itself does not.
+        Order is the capture order, which is task creation order. A missing
+        snapshot raises ``KeyError``.
         """
-        left = self.get_snapshot(left_id)
-        right = self.get_snapshot(right_id)
-        left_running = {task.task_id: task for task in left.running}
-        right_running = {task.task_id: task for task in right.running}
-        running_added = tuple(
-            task for task in right.running if task.task_id not in left_running
-        )
-        running_removed = tuple(
-            task for task in left.running if task.task_id not in right_running
-        )
-        running_changed = []
-        for task in right.running:
-            prev = left_running.get(task.task_id)
-            if prev is None:
+        snap = self.get_snapshot(snapshot_id)
+        tasks: List[FormattedLiveTaskInfo] = []
+        for task in snap.running:
+            if persistent and not task.persistent:
                 continue
-            if _live_task_signature(prev) != _live_task_signature(task):
-                running_changed.append((prev, task))
-        left_terminated = {task.task_id: task for task in left.terminated}
-        right_terminated = {task.task_id: task for task in right.terminated}
-        terminated_added = tuple(
-            task for task in right.terminated if task.task_id not in left_terminated
-        )
-        terminated_removed = tuple(
-            task for task in left.terminated if task.task_id not in right_terminated
-        )
-        terminated_changed = []
-        for task in right.terminated:
-            prev = left_terminated.get(task.task_id)
-            if prev is None:
+            if filter_ and (filter_ not in task.coro and filter_ not in task.name):
                 continue
-            if _terminated_task_signature(prev) != _terminated_task_signature(task):
-                terminated_changed.append((prev, task))
-        return TaskSnapshotDiff(
-            left_id=left_id,
-            right_id=right_id,
-            running_added=running_added,
-            running_removed=running_removed,
-            running_changed=tuple(running_changed),
-            terminated_added=terminated_added,
-            terminated_removed=terminated_removed,
-            terminated_changed=tuple(terminated_changed),
+            tasks.append(_formatted_live_task(task))
+        return tasks
+
+    def format_snapshot_terminated_task_list(
+        self,
+        snapshot_id: int,
+        filter_: str = "",
+        persistent: bool = False,
+    ) -> Sequence[FormattedTerminatedTaskInfo]:
+        """
+        Return the frozen terminated tasks in the same shape as
+        ``format_terminated_task_list``.
+
+        A missing snapshot raises ``KeyError``.
+        """
+        snap = self.get_snapshot(snapshot_id)
+        tasks: List[FormattedTerminatedTaskInfo] = []
+        for task in snap.terminated:
+            if persistent and not task.persistent:
+                continue
+            if filter_ and (filter_ not in task.coro and filter_ not in task.name):
+                continue
+            tasks.append(_formatted_terminated_task(task))
+        return tasks
+
+    def format_snapshot_running_task_stack(
+        self,
+        snapshot_id: int,
+        task_id: str | int,
+    ) -> Sequence[FormattedStackItem]:
+        """
+        Return the frozen stack for one running task.
+
+        The items match ``format_running_task_stack``, including the section
+        headers. A missing snapshot raises ``KeyError``. A missing task raises
+        ``MissingTask``.
+        """
+        snap = self.get_snapshot(snapshot_id)
+        wanted = str(task_id)
+        for task in snap.running:
+            if task.task_id == wanted:
+                return list(task.stack)
+        raise MissingTask(task_id)
+
+    def format_snapshot_terminated_task_stack(
+        self,
+        snapshot_id: int,
+        trace_id: str,
+    ) -> Sequence[FormattedStackItem]:
+        """
+        Return the frozen stack for one terminated task.
+
+        The items match ``format_terminated_task_stack``, including the
+        section headers. A missing snapshot raises ``KeyError``. A missing
+        task raises ``MissingTask``.
+        """
+        snap = self.get_snapshot(snapshot_id)
+        for task in snap.terminated:
+            if task.task_id == trace_id:
+                return list(task.stack)
+        raise MissingTask(trace_id)
+
+    def format_snapshot_diff(
+        self,
+        left_id: int,
+        right_id: int,
+    ) -> FormattedSnapshotDiff:
+        """
+        Compare the running tasks of two snapshots.
+
+        Tasks match by task id. ``removed`` and ``common`` keep the earlier
+        snapshot's list order. ``added`` keeps the later snapshot's list
+        order. Tasks that stay are ``common`` even when only the captured
+        elapsed time differs. A missing snapshot raises ``KeyError``.
+        """
+        left = self.format_snapshot_running_task_list(left_id)
+        right = self.format_snapshot_running_task_list(right_id)
+        left_ids = {task.task_id for task in left}
+        right_ids = {task.task_id for task in right}
+        return FormattedSnapshotDiff(
+            added=[task for task in right if task.task_id not in left_ids],
+            removed=[task for task in left if task.task_id not in right_ids],
+            common=[task for task in left if task.task_id in right_ids],
         )
 
     async def _coro_wrapper(self, coro: Awaitable[T_co]) -> T_co:

@@ -116,17 +116,16 @@ class TaskSnapshotSummary:
     terminated_count: int
 
 
-@dataclass(frozen=True)
-class TaskSnapshotDiff:
-    """Difference between two task snapshots, from left to right."""
+@dataclass
+class FormattedSnapshotDiff:
+    """Running tasks compared by task id.
 
-    left_id: int
-    right_id: int
-    running_added: tuple[LiveTaskSnapshot, ...]
-    running_removed: tuple[LiveTaskSnapshot, ...]
-    running_changed: tuple[tuple[LiveTaskSnapshot, LiveTaskSnapshot], ...]
-    terminated_added: tuple[TerminatedTaskSnapshot, ...]
-    terminated_removed: tuple[TerminatedTaskSnapshot, ...]
-    terminated_changed: tuple[
-        tuple[TerminatedTaskSnapshot, TerminatedTaskSnapshot], ...
-    ]
+    Lists keep the order of the formatted task tables. ``added`` tasks are
+    only in the later snapshot. ``removed`` tasks are only in the earlier
+    one. ``common`` tasks are in both, using the earlier snapshot's rows.
+    A different elapsed-time string does not take a task out of ``common``.
+    """
+
+    added: List[FormattedLiveTaskInfo]
+    removed: List[FormattedLiveTaskInfo]
+    common: List[FormattedLiveTaskInfo]

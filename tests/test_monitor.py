@@ -17,6 +17,7 @@ from prompt_toolkit.output import DummyOutput
 
 import aiomonitor.termui.commands
 from aiomonitor import Monitor, start_monitor
+from aiomonitor.exceptions import MissingTask
 from aiomonitor.termui.commands import (
     auto_command_done,
     command_done,
@@ -25,6 +26,12 @@ from aiomonitor.termui.commands import (
     custom_help_option,
     monitor_cli,
     print_ok,
+)
+from aiomonitor.types import (
+    FormatItemTypes,
+    FormattedLiveTaskInfo,
+    FormattedStackItem,
+    FormattedTerminatedTaskInfo,
 )
 
 
@@ -309,7 +316,34 @@ async def test_task_snapshots(event_loop):
         snapshot_id = monitor.capture_snapshot("before")
         assert snapshot_id == 0
         assert monitor.get_snapshot(0).label == "before"
-        assert any(item.task_id == task_id for item in monitor.get_snapshot(0).running)
+        running = monitor.format_snapshot_running_task_list(0, "", False)
+        assert all(isinstance(item, FormattedLiveTaskInfo) for item in running)
+        frozen = next(item for item in running if item.task_id == task_id)
+        assert frozen.name == "snap-sleeper"
+        same_id = monitor.capture_snapshot("same")
+        unchanged = monitor.format_snapshot_diff(0, same_id)
+        assert frozen in unchanged.common
+        assert frozen not in unchanged.added
+        assert frozen not in unchanged.removed
+        assert unchanged.common == [
+            item
+            for item in running
+            if item.task_id
+            in {
+                later.task_id
+                for later in monitor.format_snapshot_running_task_list(
+                    same_id, "", False
+                )
+            }
+        ]
+        terminated = monitor.format_snapshot_terminated_task_list(0, "", False)
+        assert all(isinstance(item, FormattedTerminatedTaskInfo) for item in terminated)
+        stack = monitor.format_snapshot_running_task_stack(0, task_id)
+        assert stack
+        assert all(isinstance(item, FormattedStackItem) for item in stack)
+        assert any(item.type == FormatItemTypes.HEADER for item in stack)
+        with pytest.raises(MissingTask):
+            monitor.format_snapshot_running_task_stack(0, "999999")
 
         resp = await invoke_command(monitor, ["ps", "--snapshot", "0"])
         assert "snap-sleeper" in resp
@@ -328,24 +362,41 @@ async def test_task_snapshots(event_loop):
         assert "snap-sleeper" in resp
 
         second_id = monitor.capture_snapshot()
-        assert second_id == 1
-        assert monitor.get_snapshot(1).label is None
-        diff = monitor.diff_snapshots(0, 1)
-        assert any(item.task_id == task_id for item in diff.running_removed)
-        assert any(item.name == "snap-sleeper" for item in diff.terminated_added)
+        assert second_id == 2
+        assert monitor.get_snapshot(second_id).label is None
+        right = monitor.format_snapshot_running_task_list(second_id, "", False)
+        right_ids = {item.task_id for item in right}
+        diff = monitor.format_snapshot_diff(0, second_id)
+        assert diff.removed == [
+            item for item in running if item.task_id not in right_ids
+        ]
+        assert diff.common == [item for item in running if item.task_id in right_ids]
+        assert diff.added == [
+            item
+            for item in right
+            if item.task_id not in {row.task_id for row in running}
+        ]
+        assert any(item.task_id == task_id for item in diff.removed)
+        assert all(isinstance(item, FormattedLiveTaskInfo) for item in diff.removed)
 
         resp = await invoke_command(monitor, ["snapshot", "after"])
-        assert "Captured snapshot 2 (after)" in resp
+        assert "Captured snapshot 3 (after)" in resp
         resp = await invoke_command(monitor, ["snapshot", "--label", "later"])
-        assert "Captured snapshot 3 (later)" in resp
+        assert "Captured snapshot 4 (later)" in resp
         resp = await invoke_command(monitor, ["snapshots"])
         assert "before" in resp
         assert "after" in resp
         assert "later" in resp
-        assert "4 snapshots captured" in resp
+        assert "5 snapshots captured" in resp
         summaries = monitor.list_snapshots()
-        assert [item.id for item in summaries] == [0, 1, 2, 3]
-        assert [item.name for item in summaries] == ["before", None, "after", "later"]
+        assert [item.id for item in summaries] == [0, 1, 2, 3, 4]
+        assert [item.name for item in summaries] == [
+            "before",
+            "same",
+            None,
+            "after",
+            "later",
+        ]
         assert summaries[0].running_count >= 1
         assert summaries[0].captured_at > 0
         assert all(item.terminated_count >= 0 for item in summaries)
@@ -353,12 +404,14 @@ async def test_task_snapshots(event_loop):
         with pytest.raises(KeyError):
             monitor.get_snapshot(9)
         with pytest.raises(KeyError):
-            monitor.diff_snapshots(0, 8)
+            monitor.format_snapshot_diff(0, 8)
+        with pytest.raises(KeyError):
+            monitor.format_snapshot_running_task_list(8, "", False)
+        with pytest.raises(KeyError):
+            monitor.format_snapshot_terminated_task_list(8, "", False)
 
-        resp = await invoke_command(monitor, ["diff", "0", "1"])
+        resp = await invoke_command(monitor, ["diff", "0", str(second_id)])
         assert "snap-sleeper" in resp
-        assert "Running tasks:" in resp
-        assert "Terminated tasks:" in resp
         assert "removed" in resp
 
         resp = await invoke_command(monitor, ["ps", "--snapshot", "9"])

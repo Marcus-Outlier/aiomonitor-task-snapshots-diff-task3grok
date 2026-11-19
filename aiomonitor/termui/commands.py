@@ -26,13 +26,9 @@ from ..context import command_done, current_monitor, current_stdout
 from ..exceptions import MissingTask
 from ..types import (
     FormatItemTypes,
-    FormattedLiveTaskInfo,
+    FormattedSnapshotDiff,
     FormattedStackItem,
-    FormattedTerminatedTaskInfo,
-    LiveTaskSnapshot,
     TaskSnapshot,
-    TaskSnapshotDiff,
-    TerminatedTaskSnapshot,
 )
 from .completion import (
     ClickCompleter,
@@ -113,14 +109,6 @@ def _write_stack(
             stdout.write(textwrap.indent(item_text.strip("\n"), "  "))
             stdout.write("\n")
     stdout.flush()
-
-
-def _lookup_snapshot(monitor: Monitor, snapshot_id: int) -> Optional[TaskSnapshot]:
-    try:
-        return monitor.get_snapshot(snapshot_id)
-    except KeyError:
-        print_fail(f"No snapshot {snapshot_id}")
-        return None
 
 
 async def interact(self: Monitor, connection: TelnetConnection) -> None:
@@ -433,45 +421,6 @@ def do_console(ctx: click.Context) -> None:
     self._termui_tasks.add(task)
 
 
-def _running_matches(task: LiveTaskSnapshot, filter_: str, persistent: bool) -> bool:
-    if persistent and not task.persistent:
-        return False
-    if filter_ and filter_ not in task.coro and filter_ not in task.name:
-        return False
-    return True
-
-
-def _terminated_matches(
-    task: TerminatedTaskSnapshot, filter_: str, persistent: bool
-) -> bool:
-    if persistent and not task.persistent:
-        return False
-    if filter_ and filter_ not in task.coro and filter_ not in task.name:
-        return False
-    return True
-
-
-def _as_live_info(task: LiveTaskSnapshot) -> FormattedLiveTaskInfo:
-    return FormattedLiveTaskInfo(
-        task.task_id,
-        task.state,
-        task.name,
-        task.coro,
-        task.created_location,
-        task.since,
-    )
-
-
-def _as_terminated_info(task: TerminatedTaskSnapshot) -> FormattedTerminatedTaskInfo:
-    return FormattedTerminatedTaskInfo(
-        task.task_id,
-        task.name,
-        task.coro,
-        task.started_since,
-        task.terminated_since,
-    )
-
-
 @monitor_cli.command(name="ps", aliases=["p"])
 @click.option("-f", "--filter", "filter_", help="filter by coroutine or task name")
 @click.option("-p", "--persistent", is_flag=True, help="show only persistent tasks")
@@ -505,14 +454,13 @@ def do_ps(
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str, str]] = [headers]
     if snapshot_id is not None:
-        snap = _lookup_snapshot(self, snapshot_id)
-        if snap is None:
+        try:
+            tasks = list(
+                self.format_snapshot_running_task_list(snapshot_id, filter_, persistent)
+            )
+        except KeyError:
+            print_fail(f"No snapshot {snapshot_id}")
             return
-        tasks = [
-            _as_live_info(task)
-            for task in snap.running
-            if _running_matches(task, filter_, persistent)
-        ]
     else:
         tasks = list(self.format_running_task_list(filter_, persistent))
     for task in tasks:
@@ -572,14 +520,15 @@ def do_ps_terminated(
     stdout = _get_current_stdout()
     table_data: List[Tuple[str, str, str, str, str]] = [headers]
     if snapshot_id is not None:
-        snap = _lookup_snapshot(self, snapshot_id)
-        if snap is None:
+        try:
+            tasks = list(
+                self.format_snapshot_terminated_task_list(
+                    snapshot_id, filter_, persistent
+                )
+            )
+        except KeyError:
+            print_fail(f"No snapshot {snapshot_id}")
             return
-        tasks = [
-            _as_terminated_info(task)
-            for task in snap.terminated
-            if _terminated_matches(task, filter_, persistent)
-        ]
     else:
         tasks = list(self.format_terminated_task_list(filter_, persistent))
     for task in tasks:
@@ -628,14 +577,17 @@ def do_where(
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     if snapshot_id is not None:
-        snap = _lookup_snapshot(self, snapshot_id)
-        if snap is None:
+        try:
+            formatted_stack_list = self.format_snapshot_running_task_stack(
+                snapshot_id, taskid
+            )
+        except KeyError:
+            print_fail(f"No snapshot {snapshot_id}")
             return
-        task = next((item for item in snap.running if item.task_id == taskid), None)
-        if task is None:
-            print_fail(f"No task {taskid}")
+        except MissingTask as e:
+            print_fail(f"No task {e.task_id}")
             return
-        _write_stack(stdout, task.stack)
+        _write_stack(stdout, formatted_stack_list)
         return
     try:
         formatted_stack_list = self.format_running_task_stack(taskid)
@@ -667,16 +619,17 @@ def do_where_terminated(
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     if snapshot_id is not None:
-        snap = _lookup_snapshot(self, snapshot_id)
-        if snap is None:
+        try:
+            formatted_stack_list = self.format_snapshot_terminated_task_stack(
+                snapshot_id, trace_id
+            )
+        except KeyError:
+            print_fail(f"No snapshot {snapshot_id}")
             return
-        task = next(
-            (item for item in snap.terminated if item.task_id == trace_id), None
-        )
-        if task is None:
-            print_fail(f"No task {trace_id}")
+        except MissingTask as e:
+            print_fail(f"No task {e.task_id}")
             return
-        _write_stack(stdout, task.stack)
+        _write_stack(stdout, formatted_stack_list)
         return
     try:
         formatted_stack_list = self.format_terminated_task_stack(trace_id)
@@ -695,58 +648,23 @@ def _snapshot_label(snapshot: TaskSnapshot) -> str:
 
 
 def _write_snapshot_diff(
-    stdout: TextIO, diff: TaskSnapshotDiff, left: TaskSnapshot, right: TaskSnapshot
+    stdout: TextIO,
+    diff: FormattedSnapshotDiff,
+    left: TaskSnapshot,
+    right: TaskSnapshot,
 ) -> None:
     stdout.write(
         f"Snapshot {left.id} ({_snapshot_label(left)})"
         f" -> snapshot {right.id} ({_snapshot_label(right)})\n"
     )
     stdout.write(
-        "Running tasks:"
-        f" {len(diff.running_added)} added,"
-        f" {len(diff.running_removed)} removed,"
-        f" {len(diff.running_changed)} changed\n"
+        f"{len(diff.added)} added, {len(diff.removed)} removed,"
+        f" {len(diff.common)} common\n"
     )
-    for task in diff.running_added:
+    for task in diff.added:
         stdout.write(f"+ {task.task_id} {task.state} {task.name} {task.coro}\n")
-    for task in diff.running_removed:
+    for task in diff.removed:
         stdout.write(f"- {task.task_id} {task.state} {task.name} {task.coro}\n")
-    for before, after in diff.running_changed:
-        stdout.write(f"~ {after.task_id} {after.name} {after.coro}\n")
-        if before.state != after.state:
-            stdout.write(f"    state: {before.state} -> {after.state}\n")
-        if before.name != after.name:
-            stdout.write(f"    name: {before.name} -> {after.name}\n")
-        if before.coro != after.coro:
-            stdout.write(f"    coro: {before.coro} -> {after.coro}\n")
-        if before.created_location != after.created_location:
-            stdout.write(
-                f"    created: {before.created_location} -> {after.created_location}\n"
-            )
-        if before.persistent != after.persistent:
-            stdout.write(f"    persistent: {before.persistent} -> {after.persistent}\n")
-    stdout.write(
-        "Terminated tasks:"
-        f" {len(diff.terminated_added)} added,"
-        f" {len(diff.terminated_removed)} removed,"
-        f" {len(diff.terminated_changed)} changed\n"
-    )
-    for task in diff.terminated_added:
-        status = "cancelled" if task.cancelled else "finished"
-        stdout.write(f"+ {task.task_id} {status} {task.name} {task.coro}\n")
-    for task in diff.terminated_removed:
-        status = "cancelled" if task.cancelled else "finished"
-        stdout.write(f"- {task.task_id} {status} {task.name} {task.coro}\n")
-    for before, after in diff.terminated_changed:
-        stdout.write(f"~ {after.task_id} {after.name} {after.coro}\n")
-        if before.name != after.name:
-            stdout.write(f"    name: {before.name} -> {after.name}\n")
-        if before.coro != after.coro:
-            stdout.write(f"    coro: {before.coro} -> {after.coro}\n")
-        if before.cancelled != after.cancelled:
-            stdout.write(f"    cancelled: {before.cancelled} -> {after.cancelled}\n")
-        if before.persistent != after.persistent:
-            stdout.write(f"    persistent: {before.persistent} -> {after.persistent}\n")
     stdout.flush()
 
 
@@ -813,7 +731,7 @@ def do_snapshot_diff(ctx: click.Context, left_id: int, right_id: int) -> None:
     self: Monitor = ctx.obj
     stdout = _get_current_stdout()
     try:
-        diff = self.diff_snapshots(left_id, right_id)
+        diff = self.format_snapshot_diff(left_id, right_id)
     except KeyError as e:
         missing = e.args[0] if e.args else left_id
         print_fail(f"No snapshot {missing}")

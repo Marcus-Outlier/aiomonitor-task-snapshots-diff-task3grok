@@ -50,4 +50,12 @@ The Monitor
 
    .. automethod:: list_snapshots
 
-   .. automethod:: diff_snapshots
+   .. automethod:: format_snapshot_running_task_list
+
+   .. automethod:: format_snapshot_terminated_task_list
+
+   .. automethod:: format_snapshot_running_task_stack
+
+   .. automethod:: format_snapshot_terminated_task_stack
+
+   .. automethod:: format_snapshot_diff
