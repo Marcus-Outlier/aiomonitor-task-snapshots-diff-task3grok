@@ -76,9 +76,19 @@ Once connection established, one can type commands, for instance ``help``::
       ps (p)                  Show task table
       ps-terminated (pst,pt)  List recently terminated/cancelled tasks
       signal                  Send a Unix signal
+      snapshot (snap)         Capture running and terminated tasks
+      snapshot-diff (diff,sd) Compare two captured snapshots
+      snapshots (snaps)       List captured snapshots
       stacktrace (st,stack)   Print a stack trace from the event loop thread
       where (w)               Show stack frames and the task creation chain of a task
       where-terminated (wt)   Show stack frames and the termination/cancellation chain of a task
+
+``snapshot`` stores the running tasks and the terminated tasks as they are at
+that moment and prints the new snapshot id. Ids start at zero, and the label
+is optional (``snapshot my-label`` or ``snapshot --label my-label``).
+``snapshots`` lists the captures. ``ps``, ``ps-terminated``, ``where``, and
+``where-terminated`` accept ``--snapshot ID`` to read the frozen data.
+``snapshot-diff LEFT RIGHT`` (alias ``diff``) compares two snapshots.
 
 Additional commands can be added by defining a Click command function injected into :ref:`the monitor CLI <monitor-cli>`, see below :ref:`cust-commands`.
 

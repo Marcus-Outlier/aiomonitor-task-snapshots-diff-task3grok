@@ -33,7 +33,7 @@ import janus
 from aiohttp import web
 from prompt_toolkit.contrib.telnet.server import TelnetServer
 
-from .exceptions import MissingTask
+from .exceptions import MissingSnapshot, MissingTask
 from .task import TracedTask, persistent_coro
 from .termui.commands import interact
 from .types import (
@@ -42,7 +42,11 @@ from .types import (
     FormattedLiveTaskInfo,
     FormattedStackItem,
     FormattedTerminatedTaskInfo,
+    LiveTaskSnapshot,
+    TaskSnapshot,
+    TaskSnapshotDiff,
     TerminatedTaskInfo,
+    TerminatedTaskSnapshot,
 )
 from .utils import (
     _extract_stack_from_exception,
@@ -84,6 +88,18 @@ async def cancel_task(task: "asyncio.Task[Any]") -> None:
     with contextlib.suppress(asyncio.CancelledError):
         task.cancel()
         await task
+
+
+def _live_task_signature(
+    task: LiveTaskSnapshot,
+) -> tuple[str, str, str, str, bool]:
+    return (task.state, task.name, task.coro, task.created_location, task.persistent)
+
+
+def _terminated_task_signature(
+    task: TerminatedTaskSnapshot,
+) -> tuple[str, str, bool, bool]:
+    return (task.name, task.coro, task.persistent, task.cancelled)
 
 
 class Monitor:
@@ -157,6 +173,8 @@ class Monitor:
         self._canceller_stacks = {}
         self._terminated_history = []
         self._max_termination_history = max_termination_history
+        self._snapshots: Dict[int, TaskSnapshot] = {}
+        self._next_snapshot_id = 0
 
         self._ui_started = threading.Event()
         self._ui_thread = threading.Thread(target=self._ui_main, args=(), daemon=True)
@@ -501,6 +519,132 @@ class Monitor:
                 )
             )
         return formatted_stack_list
+
+    def capture_snapshot(self, label: str | None = None) -> int:
+        """
+        Freeze the running and terminated tasks as they are right now.
+
+        Snapshot ids start at zero and increase by one for each capture on
+        this monitor. ``label`` is stored for display and may be omitted.
+        Returns the new snapshot id.
+        """
+        if label is not None:
+            label = label.strip() or None
+        persistent_running = {
+            str(id(task))
+            for task in asyncio.all_tasks(loop=self._monitored_loop)
+            if isinstance(task, TracedTask) and task._orig_coro in persistent_coro
+        }
+        running: List[LiveTaskSnapshot] = []
+        for info in self.format_running_task_list("", False):
+            try:
+                stack = tuple(self.format_running_task_stack(info.task_id))
+            except MissingTask:
+                stack = ()
+            running.append(
+                LiveTaskSnapshot(
+                    task_id=info.task_id,
+                    state=info.state,
+                    name=info.name,
+                    coro=info.coro,
+                    created_location=info.created_location,
+                    since=info.since,
+                    persistent=info.task_id in persistent_running,
+                    stack=stack,
+                )
+            )
+        terminated: List[TerminatedTaskSnapshot] = []
+        for info in self.format_terminated_task_list("", False):
+            raw = self._terminated_tasks.get(info.task_id)
+            try:
+                term_stack = tuple(self.format_terminated_task_stack(info.task_id))
+            except (KeyError, MissingTask):
+                term_stack = ()
+            terminated.append(
+                TerminatedTaskSnapshot(
+                    task_id=info.task_id,
+                    name=info.name,
+                    coro=info.coro,
+                    started_since=info.started_since,
+                    terminated_since=info.terminated_since,
+                    persistent=bool(raw and raw.persistent),
+                    cancelled=bool(raw and raw.cancelled),
+                    stack=term_stack,
+                )
+            )
+        snapshot_id = self._next_snapshot_id
+        self._next_snapshot_id += 1
+        self._snapshots[snapshot_id] = TaskSnapshot(
+            id=snapshot_id,
+            label=label,
+            captured_at=time.time(),
+            running=tuple(running),
+            terminated=tuple(terminated),
+        )
+        return snapshot_id
+
+    def get_snapshot(self, snapshot_id: int) -> TaskSnapshot:
+        """Return one captured snapshot, or raise ``MissingSnapshot``."""
+        try:
+            return self._snapshots[snapshot_id]
+        except KeyError:
+            raise MissingSnapshot(snapshot_id) from None
+
+    def list_snapshots(self) -> Sequence[TaskSnapshot]:
+        """Return captured snapshots in id order, starting at zero."""
+        return tuple(self._snapshots[sid] for sid in sorted(self._snapshots))
+
+    def diff_snapshots(self, left_id: int, right_id: int) -> TaskSnapshotDiff:
+        """
+        Compare two snapshots.
+
+        Added tasks are present only on the right. Removed tasks are present
+        only on the left. A task that is in both is changed when its identity
+        fields differ. Elapsed-time strings are not compared, because those
+        move even when the task itself does not.
+        """
+        left = self.get_snapshot(left_id)
+        right = self.get_snapshot(right_id)
+        left_running = {task.task_id: task for task in left.running}
+        right_running = {task.task_id: task for task in right.running}
+        running_added = tuple(
+            task for task in right.running if task.task_id not in left_running
+        )
+        running_removed = tuple(
+            task for task in left.running if task.task_id not in right_running
+        )
+        running_changed = []
+        for task in right.running:
+            prev = left_running.get(task.task_id)
+            if prev is None:
+                continue
+            if _live_task_signature(prev) != _live_task_signature(task):
+                running_changed.append((prev, task))
+        left_terminated = {task.task_id: task for task in left.terminated}
+        right_terminated = {task.task_id: task for task in right.terminated}
+        terminated_added = tuple(
+            task for task in right.terminated if task.task_id not in left_terminated
+        )
+        terminated_removed = tuple(
+            task for task in left.terminated if task.task_id not in right_terminated
+        )
+        terminated_changed = []
+        for task in right.terminated:
+            prev = left_terminated.get(task.task_id)
+            if prev is None:
+                continue
+            if _terminated_task_signature(prev) != _terminated_task_signature(task):
+                terminated_changed.append((prev, task))
+        return TaskSnapshotDiff(
+            left_id=left_id,
+            right_id=right_id,
+            running_added=running_added,
+            running_removed=running_removed,
+            running_changed=tuple(running_changed),
+            terminated_added=terminated_added,
+            terminated_removed=terminated_removed,
+            terminated_changed=tuple(terminated_changed),
+        )
 
     async def _coro_wrapper(self, coro: Awaitable[T_co]) -> T_co:
         myself = asyncio.current_task()

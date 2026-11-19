@@ -43,3 +43,11 @@ The Monitor
    .. autoproperty:: host
 
    .. autoproperty:: port
+
+   .. automethod:: capture_snapshot
+
+   .. automethod:: get_snapshot
+
+   .. automethod:: list_snapshots
+
+   .. automethod:: diff_snapshots

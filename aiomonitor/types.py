@@ -59,3 +59,58 @@ class CancellationChain:
     target_id: str
     canceller_id: str
     canceller_stack: Optional[List[traceback.FrameSummary]] = None
+
+
+@dataclass(frozen=True)
+class LiveTaskSnapshot:
+    """A running task frozen at the moment a snapshot was taken."""
+
+    task_id: str
+    state: str
+    name: str
+    coro: str
+    created_location: str
+    since: str
+    persistent: bool
+    stack: tuple[FormattedStackItem, ...]
+
+
+@dataclass(frozen=True)
+class TerminatedTaskSnapshot:
+    """A terminated task frozen at the moment a snapshot was taken."""
+
+    task_id: str
+    name: str
+    coro: str
+    started_since: str
+    terminated_since: str
+    persistent: bool
+    cancelled: bool
+    stack: tuple[FormattedStackItem, ...]
+
+
+@dataclass(frozen=True)
+class TaskSnapshot:
+    """Point-in-time copy of the running and terminated task tables."""
+
+    id: int
+    label: Optional[str]
+    captured_at: float
+    running: tuple[LiveTaskSnapshot, ...]
+    terminated: tuple[TerminatedTaskSnapshot, ...]
+
+
+@dataclass(frozen=True)
+class TaskSnapshotDiff:
+    """Difference between two task snapshots, from left to right."""
+
+    left_id: int
+    right_id: int
+    running_added: tuple[LiveTaskSnapshot, ...]
+    running_removed: tuple[LiveTaskSnapshot, ...]
+    running_changed: tuple[tuple[LiveTaskSnapshot, LiveTaskSnapshot], ...]
+    terminated_added: tuple[TerminatedTaskSnapshot, ...]
+    terminated_removed: tuple[TerminatedTaskSnapshot, ...]
+    terminated_changed: tuple[
+        tuple[TerminatedTaskSnapshot, TerminatedTaskSnapshot], ...
+    ]

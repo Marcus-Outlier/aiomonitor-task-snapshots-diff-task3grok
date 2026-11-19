@@ -133,9 +133,22 @@ Now you can type commands, for instance, ``help``::
       ps (p)                  Show task table
       ps-terminated (pst,pt)  List recently terminated/cancelled tasks
       signal                  Send a Unix signal
+      snapshot (snap)         Capture running and terminated tasks
+      snapshot-diff (diff,sd) Compare two captured snapshots
+      snapshots (snaps)       List captured snapshots
       stacktrace (st,stack)   Print a stack trace from the event loop thread
       where (w)               Show stack frames and the task creation chain of a task
       where-terminated (wt)   Show stack frames and the termination/cancellation chain of a task
+
+``snapshot`` freezes the running tasks and the terminated tasks at that moment.
+Ids start at zero. A label is optional. ``snapshots`` lists what was captured,
+``ps --snapshot ID`` and ``where --snapshot ID`` show that frozen view, and
+``diff LEFT RIGHT`` compares two snapshots::
+
+    monitor >>> snapshot before
+    monitor >>> snapshot
+    monitor >>> snapshots
+    monitor >>> diff 0 1
 
 ``aiomonitor`` also supports async python console inside a running event loop
 so you can explore the state of your application::

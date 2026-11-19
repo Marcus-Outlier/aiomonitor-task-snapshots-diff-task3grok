@@ -286,3 +286,74 @@ async def test_custom_monitor_command(monitor: Monitor):
 
     resp = await invoke_command(monitor, ["something", "someargument"])
     assert "doing something with someargument" in resp
+
+
+async def _wait_for_terminated(monitor: Monitor, name: str) -> None:
+    for _ in range(50):
+        if any(item.name == name for item in monitor._terminated_tasks.values()):
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"{name} was not recorded as terminated")
+
+
+@pytest.mark.asyncio
+async def test_task_snapshots(event_loop):
+    async def sleeper():
+        await asyncio.Event().wait()
+
+    with Monitor(event_loop, console_enabled=False, hook_task_factory=True) as monitor:
+        task = asyncio.create_task(sleeper(), name="snap-sleeper")
+        task_id = str(id(task))
+        await asyncio.sleep(0.05)
+
+        snapshot_id = monitor.capture_snapshot("before")
+        assert snapshot_id == 0
+        assert monitor.get_snapshot(0).label == "before"
+        assert any(item.task_id == task_id for item in monitor.get_snapshot(0).running)
+
+        resp = await invoke_command(monitor, ["ps", "--snapshot", "0"])
+        assert "snap-sleeper" in resp
+        assert "(snapshot 0)" in resp
+        resp = await invoke_command(monitor, ["where", "--snapshot", "0", task_id])
+        assert "snap-sleeper" in resp or "sleeper" in resp
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        await _wait_for_terminated(monitor, "snap-sleeper")
+
+        resp = await invoke_command(monitor, ["ps"])
+        assert "snap-sleeper" not in resp
+        resp = await invoke_command(monitor, ["ps", "--snapshot", "0"])
+        assert "snap-sleeper" in resp
+
+        second_id = monitor.capture_snapshot()
+        assert second_id == 1
+        assert monitor.get_snapshot(1).label is None
+        diff = monitor.diff_snapshots(0, 1)
+        assert any(item.task_id == task_id for item in diff.running_removed)
+        assert any(item.name == "snap-sleeper" for item in diff.terminated_added)
+
+        resp = await invoke_command(monitor, ["snapshot", "after"])
+        assert "Captured snapshot 2 (after)" in resp
+        resp = await invoke_command(monitor, ["snapshot", "--label", "later"])
+        assert "Captured snapshot 3 (later)" in resp
+        resp = await invoke_command(monitor, ["snapshots"])
+        assert "before" in resp
+        assert "after" in resp
+        assert "later" in resp
+        assert "4 snapshots captured" in resp
+
+        resp = await invoke_command(monitor, ["diff", "0", "1"])
+        assert "snap-sleeper" in resp
+        assert "Running tasks:" in resp
+        assert "Terminated tasks:" in resp
+        assert "removed" in resp
+
+        resp = await invoke_command(monitor, ["ps", "--snapshot", "9"])
+        assert "No snapshot 9" in resp
+        resp = await invoke_command(monitor, ["snapshot-diff", "0", "8"])
+        assert "No snapshot 8" in resp
+
+        with pytest.raises(click.UsageError):
+            await invoke_command(monitor, ["ps", "123"])
