@@ -28,7 +28,7 @@ jobs:
     # if: github.event_name == 'release' && github.event.action == 'created'
     steps:
     - name: Checkout project
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Install uv and Python
@@ -70,7 +70,7 @@ jobs:
         #   experimental: true
     steps:
     - name: Checkout the source code
-      uses: actions/checkout@v6
+      uses: actions/checkout@v7
       with:
         fetch-depth: 0
     - name: Install uv and Python
